@@ -10,8 +10,6 @@ const (
 	Civilian   = "Civilian"
 )
 
-var player []Player
-
 type Player struct {
 	Name string
 	Role string

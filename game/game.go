@@ -1,6 +1,7 @@
 package game
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -9,11 +10,7 @@ import (
 
 type Message struct {
 	Type string `json:"type"`
-	Body Body   `json:"body"`
-}
-
-type Body struct {
-	Name string `json:"name"`
+	Body string `json:"body"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -22,7 +19,7 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-var clients = make(map[*websocket.Conn]bool)
+var clients = make(map[*websocket.Conn]*Player)
 var broadcast = make(chan Message)
 
 func HandleConnections(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +29,10 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	clients[ws] = true
+	// Register new client
+	clients[ws] = &Player{}
+	log.Printf("New connection: %v", ws.RemoteAddr().String())
+	notifyPlayerList()
 
 	for {
 		var msg Message
@@ -40,11 +40,42 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("error: %v", err)
 			delete(clients, ws)
+			notifyPlayerList()
 			break
 		}
-		log.Printf("Received message: %v", msg)
+		handleMessage(ws, msg)
+	}
+}
+
+func handleMessage(ws *websocket.Conn, msg Message) {
+	switch msg.Type {
+	case "join":
+		clients[ws].Name = msg.Body
+		clients[ws].Role = "Waiting"
+		log.Printf("Player joined: %s", msg.Body)
+		broadcast <- Message{Type: "info", Body: msg.Body + " has joined the game."}
+		notifyPlayerList()
+	case "start":
+		assignRoles()
+		for client := range clients {
+			client.WriteJSON(Message{Type: "role", Body: clients[client].Role})
+		}
+		broadcast <- Message{Type: "info", Body: "Game has started!"}
+	default:
 		broadcast <- msg
 	}
+}
+
+func notifyPlayerList() {
+	var playerNames []string
+	for _, player := range clients {
+		if player.Name != "" {
+			playerNames = append(playerNames, player.Name)
+		}
+	}
+	log.Printf("Current players: %v", playerNames)
+	playerList, _ := json.Marshal(playerNames)
+	broadcast <- Message{Type: "player_list", Body: string(playerList)}
 }
 
 func HandleMessages() {
@@ -56,7 +87,25 @@ func HandleMessages() {
 				log.Printf("error: %v", err)
 				client.Close()
 				delete(clients, client)
+				notifyPlayerList()
 			}
 		}
+	}
+}
+
+func assignRoles() {
+	var players []Player
+	for _, player := range clients {
+		players = append(players, *player)
+	}
+
+	numUndercover := len(players) / 4
+	numCivilians := len(players) - numUndercover
+	roles := AssignRoles(players, numUndercover, numCivilians)
+
+	i := 0
+	for client := range clients {
+		clients[client].Role = roles[i].Role
+		i++
 	}
 }
